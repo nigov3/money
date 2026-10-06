@@ -97,17 +97,37 @@ interface TransactionDao {
     )
     fun observeSpendByCategory(from: Long, to: Long): Flow<List<CategorySpendAgg>>
 
-    /** Bar chart: траты по дням периода (GROUP BY день через strftime, UTC-ms -> локальный день делаем в VM). */
+    /**
+     * Bar chart: траты по дням периода. Группировка по дню календаря — на SQL
+     * (strftime + localized_start_of_day), чтобы не тянуть все строки в память.
+     * :tzOffsetMillis — смещение локали (VM считает через ZoneRules, без android API).
+     */
     @Query(
         """
-        SELECT occurred_at AS occurredAt, amount_minor AS totalMinor
+        SELECT (occurred_at + :tzOffsetMillis) / 86400000 AS dayEpoch,
+               SUM(amount_minor)                          AS totalMinor
         FROM transactions
         WHERE deleted = 0 AND type = 'EXPENSE'
           AND occurred_at BETWEEN :from AND :to
-        ORDER BY occurred_at ASC
+        GROUP BY dayEpoch
+        ORDER BY dayEpoch ASC
         """
     )
-    fun observeExpensePoints(from: Long, to: Long): Flow<List<TimestampAmountPoint>>
+    fun observeDailySpend(from: Long, to: Long, tzOffsetMillis: Long): Flow<List<DailySpendAgg>>
+
+    /** Агрегация по месяцам (для тренда «расходы по месяцам» и фильтра «месяц»). */
+    @Query(
+        """
+        SELECT strftime('%Y-%m', (:tzOffsetMillis + occurred_at) / 1000, 'unixepoch') AS monthKey,
+               SUM(amount_minor) AS totalMinor
+        FROM transactions
+        WHERE deleted = 0 AND type = 'EXPENSE'
+          AND occurred_at BETWEEN :from AND :to
+        GROUP BY monthKey
+        ORDER BY monthKey ASC
+        """
+    )
+    fun observeMonthlySpend(from: Long, to: Long, tzOffsetMillis: Long): Flow<List<MonthSpendAgg>>
 
     /** Проверка существования дубля перед вставкой (быстрый путь без исключения). */
     @Query("SELECT EXISTS(SELECT 1 FROM transactions WHERE dedup_key = :key)")
@@ -126,8 +146,15 @@ data class CategorySpendAgg(
     val totalMinor: Long,
 )
 
-data class TimestampAmountPoint(
-    val occurredAt: Long,
+/** Одна точка гистограммы: день (epoch day в локальной зоне) + сумма расходов. */
+data class DailySpendAgg(
+    val dayEpoch: Long,
+    val totalMinor: Long,
+)
+
+/** Сумма расходов за календарный месяц ("2026-10"). */
+data class MonthSpendAgg(
+    val monthKey: String,
     val totalMinor: Long,
 )
 
