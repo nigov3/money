@@ -26,6 +26,12 @@ import ru.zenflow.finance.presentation.common.formatMinor
 import ru.zenflow.finance.presentation.common.formatTxTimestamp
 import ru.zenflow.finance.presentation.theme.FinanceTheme
 
+/** Цвет категории из БД (ARGB int, легитимны и отрицательные — two's complement). */
+fun categoryColor(argb: Int): Color = Color(argb)
+
+/** Тинт аватара категории: фон 14% от цвета. */
+fun categoryAvatarTint(argb: Int): Color = Color(argb).copy(alpha = 0.14f)
+
 /**
  * Строка ленты транзакций. Плоский стиль: иконка-аватар категории слева,
  * сумма с фиксированным знаком/цветом справа.

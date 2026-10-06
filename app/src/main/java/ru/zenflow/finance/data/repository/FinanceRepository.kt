@@ -1,13 +1,20 @@
 package ru.zenflow.finance.data.repository
 
+import androidx.room.withTransaction
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import ru.zenflow.finance.core.budget.BudgetPeriodCalculator
 import ru.zenflow.finance.core.model.TransactionType
+import ru.zenflow.finance.data.local.FinanceDatabase
 import ru.zenflow.finance.data.local.dao.AccountDao
+import ru.zenflow.finance.data.local.dao.BudgetDao
 import ru.zenflow.finance.data.local.dao.CategoryDao
 import ru.zenflow.finance.data.local.dao.TransactionDao
 import ru.zenflow.finance.data.local.entity.AccountEntity
+import ru.zenflow.finance.data.local.entity.BudgetEntity
 import ru.zenflow.finance.data.local.entity.CategoryEntity
+import ru.zenflow.finance.data.local.entity.Period
+import ru.zenflow.finance.data.local.entity.TransactionEntity
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -47,6 +54,8 @@ class FinanceRepository @Inject constructor(
     private val transactionDao: TransactionDao,
     private val categoryDao: CategoryDao,
     private val accountDao: AccountDao,
+    private val budgetDao: BudgetDao,
+    private val db: FinanceDatabase,
 ) {
 
     fun observeRecent(limit: Int = 200): Flow<List<TxRow>> =
@@ -78,7 +87,166 @@ class FinanceRepository @Inject constructor(
     fun observeCategories(): Flow<List<CategoryEntity>> = categoryDao.observeAll()
     fun observeAccounts(): Flow<List<AccountEntity>> = accountDao.observeActiveAccounts()
 
-    suspend fun softDeleteTransaction(id: Long) = transactionDao.softDelete(id)
+    // ==================== Этап 3: правка / удаление / ручное добавление ==================== //
+
+    /** Полная карточка транзакции для экрана «Детали/Правка» (одноразовый снимок). */
+    suspend fun getTransactionFull(id: Long) = transactionDao.getFullById(id)
+
+    /**
+     * Ручная вставка транзакции (FAB «Добавить»). source == null — это MANUAL,
+     * dedup_key генерируем с префиксом "manual:" — он никогда не столкнётся с
+     * хешем банковского сообщения.
+     */
+    suspend fun addManualTransaction(
+        accountId: Long,
+        categoryId: Long?,
+        amountMinor: Long,
+        type: TransactionType,
+        merchant: String?,
+        occurredAt: Long,
+        note: String?,
+        currency: String = "RUB",
+    ): Long = db.withTransaction {
+        val id = transactionDao.insertIfNew(
+            TransactionEntity(
+                accountId = accountId,
+                categoryId = categoryId,
+                amountMinor = amountMinor.coerceAtLeast(1L),
+                currency = currency,
+                type = type,
+                merchant = merchant?.takeIf { it.isNotBlank() },
+                occurredAt = occurredAt,
+                source = null, // null-источник = ручной ввод; см. CaptureChannel
+                dedupKey = "manual:${System.currentTimeMillis()}:${amountMinor.hashCode()}",
+                note = note?.takeIf { it.isNotBlank() },
+            )
+        )
+        if (id != -1L) accountDao.applyBalanceDelta(accountId, amountMinor, type.name)
+        id
+    }
+
+    /**
+     * Сохранение правки. Баланс пересчитываем НЕ инкрементально, а прямым
+     * UPDATE по формуле initial + Σ(sign·amount) — так правка суммы/типа
+     * автоматически чинит кэш без сложных дельт «old vs new».
+     */
+    suspend fun editTransaction(
+        id: Long,
+        categoryId: Long?,
+        amountMinor: Long,
+        type: TransactionType,
+        merchant: String?,
+        occurredAt: Long,
+        note: String?,
+    ) = db.withTransaction {
+        val full = transactionDao.getFullById(id) ?: return@withTransaction
+        transactionDao.updateEditableFields(
+            id = id,
+            categoryId = categoryId,
+            amountMinor = amountMinor.coerceAtLeast(1L),
+            type = type.name,
+            merchant = merchant?.takeIf { it.isNotBlank() },
+            occurredAt = occurredAt,
+            note = note?.takeIf { it.isNotBlank() },
+        )
+        recomputeAccountBalance(full.accountId)
+    }
+
+    /** Soft-delete + пересчёт баланса счёта (в одной транзакции — нет «мигающего» баланса). */
+    suspend fun deleteTransaction(id: Long) = db.withTransaction {
+        val full = transactionDao.getFullById(id) ?: return@withTransaction
+        transactionDao.softDelete(id)
+        recomputeAccountBalance(full.accountId)
+    }
+
+    private suspend fun recomputeAccountBalance(accountId: Long) {
+        val acc = accountDao.getById(accountId) ?: return
+        val live = transactionDao.getAllLiveForAccount(accountId)
+        val sum = live.sumOf { t ->
+            when (t.type) {
+                TransactionType.EXPENSE -> -t.amountMinor
+                else -> t.amountMinor // INCOME и приходные ноги TRANSFER плюсуем
+            }
+        }
+        accountDao.setBalance(accountId, acc.initialBalanceMinor + sum)
+    }
+
+    // ==================== Категории ==================== //
+
+    suspend fun createCategory(name: String, colorArgb: Int, icon: String, matchPattern: String?): Long =
+        categoryDao.insert(
+            CategoryEntity(
+                name = name.trim(),
+                color = colorArgb,
+                icon = icon,
+                system = false,
+                matchPattern = matchPattern?.takeIf { it.isNotBlank() },
+            )
+        )
+
+    suspend fun deleteCategory(category: CategoryEntity) = categoryDao.delete(category)
+
+    // ==================== Бюджеты ==================== //
+
+    /** upsert лимита: UNIQUE(category_id, period) гарантирует один бюджет на связку. */
+    suspend fun saveBudget(categoryId: Long?, limitMinor: Long, period: Period): Long =
+        budgetDao.upsert(BudgetEntity(categoryId = categoryId, limitMinor = limitMinor, period = period))
+
+    suspend fun deleteBudget(id: Long) = budgetDao.deleteById(id)
+
+    fun observeBudgets(): Flow<List<BudgetEntity>> = budgetDao.observeActive()
+
+    /**
+     * Живой статус всех бюджетов: spent из SQL-агрегации за текущий цикл +
+     * spent за предыдущий (для подсказки «средний расход»). Чистая функция
+     * сборки статуса — BudgetPeriodCalculator тестируется отдельно.
+     */
+    fun observeBudgetStatuses(nowMillis: Long): Flow<List<BudgetStatus>> {
+        val monthWin = BudgetPeriodCalculator.windowsFor(BudgetPeriodCalculator.BudgetPeriod.MONTH, nowMillis)
+        val weekWin = BudgetPeriodCalculator.windowsFor(BudgetPeriodCalculator.BudgetPeriod.WEEK, nowMillis)
+        return combine4(
+            budgetDao.observeActive(),
+            categoryDao.observeAll(),
+            transactionDao.observeSpentByCategoryInRange(monthWin.currentFrom, monthWin.currentTo),
+            transactionDao.observeTotalSpentInRange(monthWin.currentFrom, monthWin.currentTo),
+        ) { budgets, categories, monthSpent, monthTotal ->
+            val byCat = monthSpent.associate { it.categoryId to it.spentMinor }
+            budgets.map { b ->
+                val win = if (b.period == Period.WEEK) weekWin else monthWin
+                val spent = if (b.categoryId == null) monthTotal.spentMinor
+                            else byCat[b.categoryId] ?: 0L
+                BudgetStatus(
+                    budget = b,
+                    categoryName = categories.firstOrNull { it.id == b.categoryId }?.name
+                        ?: "Общий бюджет",
+                    spentMinor = spent,
+                    progress = BudgetPeriodCalculator.progress(spent, b.limitMinor),
+                    cycleFrom = win.currentFrom,
+                    cycleTo = win.currentTo,
+                )
+            }.sortedByDescending { it.progress }
+        }
+    }
+
+    /** Строка UI-экрана «Бюджеты»: всё готово к отрисовке progress-бара. */
+    data class BudgetStatus(
+        val budget: BudgetEntity,
+        val categoryName: String,
+        val spentMinor: Long,
+        val progress: Float,          // >1 => превышение, UI красит в expense-цвет
+        val cycleFrom: Long,
+        val cycleTo: Long,
+    )
+
+    /** combine для 4 потоков (stdlib-перегрузка даёт vararg-деструктуризацию). */
+    private fun <A, B, C, D, R> combine4(
+        a: Flow<A>, b: Flow<B>, c: Flow<C>, d: Flow<D>,
+        transform: suspend (A, B, C, D) -> R,
+    ): Flow<R> = kotlinx.coroutines.flow.combine(a, b, c, d) { array ->
+        @Suppress("UNCHECKED_CAST") // типы гарантированы аргументами a..d
+        val (x, y, z, w) = array as Array<Any?>
+        transform(x as A, y as B, z as C, w as D)
+    }
 
     private fun ru.zenflow.finance.data.local.dao.TransactionWithRefs.toRow(): TxRow {
         val t = transaction

@@ -135,6 +135,73 @@ interface TransactionDao {
 
     @Query("SELECT COUNT(*) FROM transactions WHERE deleted = 0")
     fun observeCount(): Flow<Int>
+
+    /** Живые транзакции счёта для пересчёта баланса после правки/удаления. */
+    @Query("SELECT * FROM transactions WHERE account_id = :accountId AND deleted = 0")
+    suspend fun getAllLiveForAccount(accountId: Long): List<TransactionEntity>
+
+    // ---------------- Этап 3: детальная выборка и правка ---------------- //
+
+    /** Транзакция + JOIN имён категории/счёта для экрана «Детали/Правка». */
+    @Query(
+        """
+        SELECT t.*, c.name AS categoryName, a.name AS accountName
+        FROM transactions t
+        LEFT JOIN categories c ON c.id = t.category_id
+        LEFT JOIN accounts   a ON a.id = t.account_id
+        WHERE t.id = :id
+        """
+    )
+    suspend fun getFullById(id: Long): TransactionFull?
+
+    /**
+     * Обновление полей после ручной правки. dedup_key НЕ трогаем — он должен
+     * продолжать гасить дубли того же банковского события даже после edits.
+     */
+    @Query(
+        """
+        UPDATE transactions SET
+            category_id  = :categoryId,
+            amount_minor = :amountMinor,
+            type         = :type,
+            merchant     = :merchant,
+            occurred_at  = :occurredAt,
+            note         = :note
+        WHERE id = :id AND deleted = 0
+        """
+    )
+    suspend fun updateEditableFields(
+        id: Long,
+        categoryId: Long?,
+        amountMinor: Long,
+        type: String,
+        merchant: String?,
+        occurredAt: Long,
+        note: String?,
+    )
+
+    /** Траты по категориям за произвольный интервал (движок бюджетов). */
+    @Query(
+        """
+        SELECT category_id AS categoryId, SUM(amount_minor) AS spentMinor
+        FROM transactions
+        WHERE deleted = 0 AND type = 'EXPENSE'
+          AND occurred_at BETWEEN :from AND :to
+        GROUP BY category_id
+        """
+    )
+    fun observeSpentByCategoryInRange(from: Long, to: Long): Flow<List<CategorySpentInRange>>
+
+    /** Итоговые траты за интервал (для общего бюджета без категории). */
+    @Query(
+        """
+        SELECT COALESCE(SUM(amount_minor), 0) AS spentMinor
+        FROM transactions
+        WHERE deleted = 0 AND type = 'EXPENSE'
+          AND occurred_at BETWEEN :from AND :to
+        """
+    )
+    fun observeTotalSpentInRange(from: Long, to: Long): Flow<TotalSpentInRange>
 }
 
 // ---------------- Projection-классы для агрегирующих запросов ---------------- //

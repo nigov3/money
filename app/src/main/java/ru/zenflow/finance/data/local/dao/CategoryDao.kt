@@ -12,7 +12,17 @@ import ru.zenflow.finance.data.local.entity.CategoryEntity
 interface CategoryDao {
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
-    suspend fun insertAll(categories: List<CategoryEntity>)
+    suspend fun insertAll(categories: List<CategoryEntity>): List<Long>
+
+    /** Создание пользовательской категории (id=0 -> autoGenerate). */
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insert(category: CategoryEntity): Long
+
+    @Delete
+    suspend fun delete(category: CategoryEntity)
+
+    @Query("SELECT * FROM categories WHERE id = :id")
+    suspend fun getById(id: Long): CategoryEntity?
 
     @Query("SELECT * FROM categories WHERE parent_id IS NULL ORDER BY name")
     fun observeRootCategories(): Flow<List<CategoryEntity>>
