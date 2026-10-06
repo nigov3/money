@@ -1,0 +1,134 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  AndroidManifest.xml — ZenFlow Finance
+
+  ПОДВОДНЫЕ КАМНИ (обязательно к прочтению):
+
+  1. BIND_NOTIFICATION_LISTENER_SERVICE:
+     - Пользователь ОБЯЗАН выдать доступ вручную в Настройки → Уведомления →
+       Уведомления от приложений / "Доступ к уведомлениям". Запросить программно
+       нельзя, можно только открыть настройки интентом:
+       Settings.ACTION_APP_NOTIFICATION_LISTENER... (см. PermissionHelper позже).
+     - Сервис не является foreground-сервисом; система может его убить при
+       нехватке памяти, но переподключит автоматически (привязка системой).
+     - Google Play: требуется заполнение формы-обоснования доступа к данным
+       уведомлений (Policy API → "Notification access justification").
+       Без обоснования релиз отклонят. Для sideload/личного использования —
+       работает как есть.
+
+  2. SMS на Android 10+ (API 29):
+     - RECEIVE_SMS + manifest-приёмник по android.provider.Telephony.SMS_RECEIVED
+       продолжает доставляться всем приложениям с разрешением (в отличие от
+       ACTION_SMS_DELIVERED, который уходит только default-SMS приложению).
+       Однако Google Play запрещает фоновый чтение SMS без статуса default SMS
+       app или узкого исключения (2FA) — для публикации нужно обоснование в
+       "SMS and Call Log Permission Declaration". Технически код ниже рабочий.
+     - READ_SMS достаточно для чтения провайдера content://sms, но Google Play
+        требует обоснование "SMS/Call Log permission declaration".
+
+  3. POST_NOTIFICATIONS (Android 13+, API 33): runtime-разрешение. Нужно, чтобы
+     WE сами могли показывать уведомления (например, подтверждение записи траты).
+
+  4. Фоновые ограничения Android 12+ (API 31) и Doze:
+     - NotificationListenerService вызывается в контексте привязанного сервиса —
+       тяжёлую работу (парсинг + БД) кидаем в корутины с собственным Dispatcher,
+       не блокируя onNotificationPosted. Если задача может затянуться — уводим в
+       Foreground Service или enqueue WorkManager (уже добавлен в зависимости).
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- ==================== РАЗРЕШЕНИЯ ==================== -->
+
+    <!-- Перехват push-уведомлений банков (нужен ручной grant пользователем) -->
+    <uses-permission
+        android:name="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
+        tools:ignore="ProtectedPermissions" />
+
+    <!-- SMS от банков -->
+    <uses-permission android:name="android.permission.RECEIVE_SMS" />
+    <uses-permission android:name="android.permission.READ_SMS" />
+
+    <!-- Показ наших собственных уведомлений (runtime, Android 13+) -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Сетевые разрешения пригодятся на этапе синхронизации/курсов валют -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- WorkManager/fallback-персистентность сервиса уведомлений -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!-- ==================== ПРИЛОЖЕНИЕ ==================== -->
+    <application
+        android:name=".ZenFlowApp"
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.ZenFlow"
+        tools:targetApi="35">
+
+        <!-- Главный экран (Compose Activity будет добавлен на этапе UI) -->
+        <activity
+            android:name=".presentation.MainActivity"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- ========== СЕРВИС ПЕРЕХВАТА УВЕДОМЛЕНИЙ ========== -->
+        <service
+            android:name=".service.notification.BankNotificationListenerService"
+            android:exported="true"
+            android:label="@string/notification_listener_label"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+            <!-- Тип службы для Android 14+ (required для foreground-типов;
+                 listener-сервис обычный, но tools:node сохраняем на будущее) -->
+        </service>
+
+        <!-- ========== SMS BROADCAST RECEIVER ========== -->
+        <!-- exported=true обязателен для системных broadcast (Android 12+) -->
+        <receiver
+            android:name=".service.sms.BankSmsReceiver"
+            android:exported="true"
+            android:permission="android.permission.BROADCAST_SMS">
+            <intent-filter android:priority="999">
+                <action android:name="android.provider.Telephony.SMS_RECEIVED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Перезапуск обработки после загрузки устройства (запасной канал) -->
+        <receiver
+            android:name=".service.BootCompletedReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Отключаем авто-инициализацию WorkManager: инициализируем сами
+             через Hilt (Configuration.Provider в Application) -->
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            android:exported="false"
+            tools:node="merge">
+            <meta-data
+                android:name="androidx.work.WorkManagerInitializer"
+                android:value="androidx.startup"
+                tools:node="remove" />
+        </provider>
+
+    </application>
+</manifest>

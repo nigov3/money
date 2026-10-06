@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Финансовые данные НЕ бэкапим и НЕ переносим на новые устройства без явного шифрования -->
+<data-extraction-rules>
+    <cloud-backup><exclude domain="database" path="." /></cloud-backup>
+    <device-transfer><exclude domain="database" path="." /></device-transfer>
+</data-extraction-rules>
