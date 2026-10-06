@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">ZenFlow Finance</string>
+    <string name="notification_listener_label">ZenFlow — автоучёт трат из уведомлений банков</string>
+</resources>

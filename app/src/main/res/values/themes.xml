@@ -1,0 +1,6 @@
+<resources>
+    <!-- Стартовая XML-тема до загрузки Compose (чтобы не было белой вспышки) -->
+    <style name="Theme.ZenFlow" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@android:color/black</item>
+    </style>
+</resources>
