@@ -26,6 +26,24 @@ interface AccountDao {
     @Query("SELECT * FROM accounts WHERE id = :id")
     suspend fun getById(id: Long): AccountEntity?
 
+    @Query("UPDATE accounts SET cached_balance_minor = :balance WHERE id = :id")
+    suspend fun setBalance(id: Long, balance: Long)
+
+    /**
+     * Откат дельты баланса при удалении транзакции: знак обратный вставке.
+     * (EXPENSE при добавлении минусовал баланс — при удалении возвращаем.)
+     */
+    @Query(
+        """
+        UPDATE accounts SET cached_balance_minor = cached_balance_minor + CASE
+            WHEN :type = 'EXPENSE' THEN :amountMinor
+            ELSE -:amountMinor
+        END
+        WHERE id = :accountId
+        """
+    )
+    suspend fun revertBalanceDelta(accountId: Long, amountMinor: Long, type: String)
+
     /**
      * Инкремент кэша баланса при вставке транзакции.
      * EXPENSE уменьшает, INCOME/TRANSFER(приходная нога) увеличивают —

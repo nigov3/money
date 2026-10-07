@@ -28,6 +28,13 @@ interface BudgetDao {
     @Query("SELECT * FROM budgets WHERE isActive = 1")
     fun observeActive(): Flow<List<BudgetEntity>>
 
+    @Query("SELECT * FROM budgets WHERE id = :id")
+    suspend fun getById(id: Long): BudgetEntity?
+
+    /** Уникальный индекс (category_id, period) — upsert по категории+периоду. */
+    @Query("DELETE FROM budgets WHERE id = :id")
+    suspend fun deleteById(id: Long)
+
     /** Бюджет + фактические траты по категории за период (для progress-баров на экране аналитики). */
     @Query(
         """

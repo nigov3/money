@@ -1,4 +1,33 @@
 <resources>
     <string name="app_name">ZenFlow Finance</string>
     <string name="notification_listener_label">ZenFlow — автоучёт трат из уведомлений банков</string>
+
+    <!-- Онбординг -->
+    <string name="onboarding_title">Возьмите деньги под контроль</string>
+    <string name="onboarding_subtitle">ZenFlow сам читает уведомления и SMS банков, распознаёт суммы и магазины — ничего вводить вручную не нужно.</string>
+    <string name="onboarding_notif_title">Доступ к уведомлениям</string>
+    <string name="onboarding_notif_desc">Основной канал: траты появятся автоматически после каждой оплаты. Выдаётся один раз в настройках системы.</string>
+    <string name="onboarding_sms_title">Чтение SMS от банков</string>
+    <string name="onboarding_sms_desc">Резервный канал для банков, которые шлют только СМС (Альфа, ВТБ). Данные не покидают устройство.</string>
+    <string name="onboarding_start">Начать</string>
+    <string name="onboarding_skip">Пропустить</string>
+
+    <!-- Экран правки -->
+    <string name="edit_title">Операция</string>
+    <string name="edit_save">Сохранить</string>
+    <string name="edit_delete">Удалить</string>
+    <string name="edit_amount">Сумма</string>
+    <string name="edit_merchant">Место / получатель</string>
+    <string name="edit_category">Категория</string>
+    <string name="edit_type_expense">Расход</string>
+    <string name="edit_type_income">Доход</string>
+    <string name="edit_type_transfer">Перевод</string>
+    <string name="edit_note">Заметка</string>
+
+    <!-- Бюджеты -->
+    <string name="budgets_title">Бюджеты</string>
+    <string name="budgets_empty">Бюджетов пока нет</string>
+    <string name="budgets_add_hint">Например: Кафе — 15 000 ₽ / месяц</string>
+    <string name="budget_over_limit">Превышение на %1$s</string>
+    <string name="budget_remaining">Осталось %1$s</string>
 </resources>

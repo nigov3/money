@@ -29,6 +29,8 @@ object AppModule {
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): FinanceDatabase =
         Room.databaseBuilder(context, FinanceDatabase::class.java, FinanceDatabase.NAME)
+            // Seed категорий + дефолтного счёта при ПЕРВОМ создании файла БД
+            .addCallback(FinanceDatabase.buildSeedCallback())
             // В debug разрушительная миграция допустима; в release — только явные Migration(v1->v2...)
             .apply { if (BuildConfig.DEBUG) fallbackToDestructiveMigration() }
             .build()
